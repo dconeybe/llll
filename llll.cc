@@ -1,60 +1,100 @@
 #include <atomic>
 #include <iostream>
 #include <latch>
+#include <mutex>
 #include <thread>
 #include <vector>
 
+// A node in the linked list.
 struct node {
-  int value;
+  unsigned value;
   std::atomic<node*> next;
 };
 
-std::ptrdiff_t num_threads = std::thread::hardware_concurrency();
-std::latch latch(num_threads);
+// The head of the linked list.
 constinit node head = { .next = nullptr };
 
-void list_populate(int start);
+// Append the given value to the linked list.
+void list_append(unsigned value) {
+  node* const new_tail = new node{ .value = value, .next = nullptr };
+  node* cur = &head;
+  node* next = cur->next.load(std::memory_order_acquire);
+
+  // This is a compare-and-swap (a.k.a. "CAS") loop, which is very common
+  // in lock-free programming.
+  while (true) {
+    if (next) {
+      cur = next;
+      next = cur->next.load(std::memory_order_acquire);
+    } else if (
+        cur->next.compare_exchange_weak(
+          next,
+          new_tail,
+          std::memory_order_release,
+          std::memory_order_acquire
+        )
+    ) {
+      break;
+    }
+  }
+}
+
+// Appends `count` values to the list, starting at `start`.
+// Blocks on latch.arrive_and_wait().
+void list_populate(std::latch& latch, unsigned start, unsigned count);
+
+// Prints information about the list.
 void list_print();
+
+// Lock to serialize writes to stdout.
+std::mutex cout_mutex;
 
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
 
+  const auto num_threads = std::thread::hardware_concurrency();
+  std::cout << "Starting " << num_threads << " threads." << std::endl;
+  const unsigned count = 500000 / num_threads;
+  std::latch latch(num_threads);
   std::vector<std::thread> threads;
-  int next_start = 100;
+  unsigned next_start = 0;
   for (auto i = num_threads; i > 0; --i) {
-    threads.emplace_back(list_populate, next_start);
-    next_start += 100;
+    threads.emplace_back([&latch, next_start, count] {
+        list_populate(latch, next_start, count);
+    });
+    next_start += count;
   }
 
   for (auto& thread : threads) {
     thread.join();
   }
+  std::cout << "All " << num_threads << " threads have completed." << std::endl;
 
   list_print();
 
   return 0;
 }
 
-void list_append(int value) {
-  node* const new_tail = new node{ .value = value, .next = nullptr };
-  node* cur = &head;
-  node* next = cur->next.load(std::memory_order_acquire);
-
-  while (true) {
-    if (next) {
-      cur = next;
-      next = cur->next.load(std::memory_order_acquire);
-    } else if (cur->next.compare_exchange_weak(next, new_tail, std::memory_order_release, std::memory_order_acquire)) {
-      break;
-    }
+void list_populate(std::latch& latch, const unsigned start, const unsigned count) {
+  const auto thread_id = std::this_thread::get_id();
+  {
+    std::lock_guard lock(cout_mutex);
+    std::cout << "Thread " << thread_id
+      << " started: start=" << start
+      << " count=" << count << std::endl;
   }
-}
 
-void list_populate(int start) {
   latch.arrive_and_wait();
-  for (int i=0; i<50000; ++i) {
+  for (unsigned i=0; i<count; ++i) {
     list_append(start + i);
+  }
+
+  {
+    std::lock_guard lock(cout_mutex);
+    std::cout << "Thread " << thread_id
+      << " done: start=" << start
+      << " count=" << count << std::endl;
   }
 }
 
@@ -63,11 +103,8 @@ void list_print() {
   const node* cur = &head;
   while (cur->next) {
     cur = cur->next;
-    if (count != 0) {
-      //std::cout << ", ";
-    }
     ++count;
-    //std::cout << cur->value;
   }
-  std::cout << std::endl << "size=" << count << std::endl;
+
+  std::cout << std::endl << "DONE: list size: " << count << std::endl;
 }
