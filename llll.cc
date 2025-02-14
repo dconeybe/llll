@@ -41,7 +41,12 @@ void list_append(unsigned value) {
 
 // Appends `count` values to the list, starting at `start`.
 // Blocks on latch.arrive_and_wait().
-void list_populate(std::latch& latch, unsigned start, unsigned count);
+void list_populate(
+    std::latch& latch,
+    std::atomic<unsigned>& live_thread_count,
+    const unsigned start,
+    const unsigned count
+);
 
 // Prints information about the list.
 void list_print();
@@ -55,13 +60,14 @@ int main(int argc, char** argv) {
 
   const auto num_threads = std::thread::hardware_concurrency();
   std::cout << "Starting " << num_threads << " threads." << std::endl;
-  const unsigned count = 500000 / num_threads;
+  std::atomic<unsigned> live_thread_count(num_threads);
+  const unsigned count = 200000 / num_threads;
   std::latch latch(num_threads);
   std::vector<std::thread> threads;
   unsigned next_start = 0;
   for (auto i = num_threads; i > 0; --i) {
-    threads.emplace_back([&latch, next_start, count] {
-        list_populate(latch, next_start, count);
+    threads.emplace_back([&latch, &live_thread_count, next_start, count] {
+        list_populate(latch, live_thread_count, next_start, count);
     });
     next_start += count;
   }
@@ -76,7 +82,12 @@ int main(int argc, char** argv) {
   return 0;
 }
 
-void list_populate(std::latch& latch, const unsigned start, const unsigned count) {
+void list_populate(
+    std::latch& latch,
+    std::atomic<unsigned>& live_thread_count,
+    const unsigned start,
+    const unsigned count
+) {
   const auto thread_id = std::this_thread::get_id();
   {
     std::lock_guard lock(cout_mutex);
@@ -92,8 +103,11 @@ void list_populate(std::latch& latch, const unsigned start, const unsigned count
 
   {
     std::lock_guard lock(cout_mutex);
+    const auto num_threads_remaining =
+      live_thread_count.fetch_sub(1, std::memory_order_relaxed) - 1;
     std::cout << "Thread " << thread_id
-      << " done: start=" << start
+      << " done (" << num_threads_remaining
+      << " threads remaining): start=" << start
       << " count=" << count << std::endl;
   }
 }
