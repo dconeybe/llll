@@ -59,9 +59,11 @@ int main(int argc, char** argv) {
   (void)argv;
 
   const auto num_threads = std::thread::hardware_concurrency();
-  std::cout << "Starting " << num_threads << " threads." << std::endl;
   std::atomic<unsigned> live_thread_count(num_threads);
   const unsigned count = 200000 / num_threads;
+  const unsigned expected_list_size = count * num_threads;
+  std::cout << "Starting " << num_threads << " threads to append "
+    << expected_list_size << " elements" << std::endl;
   std::latch latch(num_threads);
   std::vector<std::thread> threads;
   unsigned next_start = 0;
@@ -75,7 +77,9 @@ int main(int argc, char** argv) {
   for (auto& thread : threads) {
     thread.join();
   }
-  std::cout << "All " << num_threads << " threads have completed." << std::endl;
+  std::cout << "All " << num_threads
+    << " threads have completed, expected to have appended "
+    << expected_list_size << " elements" << std::endl;
 
   list_print();
 
